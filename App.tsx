@@ -18,11 +18,12 @@ import {
   Button,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
+  Alert
 } from 'react-native';
 
 import Icon from 'react-native-vector-icons/Ionicons';
-
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Progress from 'react-native-progress';
 
 import {
   Colors,
@@ -32,9 +33,16 @@ import {
   ReloadInstructions,
 } from 'react-native/Libraries/NewAppScreen';
 
+
+
 type SectionProps = PropsWithChildren<{
   title: string;
 }>;
+
+const API = {
+  baseURL: 'http://10.168.43.1:3000',
+  // baseURL: 'http://localhost:3000'
+};
 
 
 
@@ -42,70 +50,238 @@ function App(): React.JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
   const [isWashing, setIsWashing] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
-
-  const [pressureData, setPressureData] = useState(null);
-  const [turbidityData, setTurbidityData] = useState(null);
+  const [progress, setProgress] = useState(0);
+  const [pressureData1, setPressureData1] = useState(0);
+  const [pressureData2, setPressureData2] = useState(0);
+  const [turbidityData, setTurbidityData] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingText, setLoadingText] = useState('Washing On Process');
+  
+
+
+  // const handleBackgroundTask = async () => {
+  //   try {
+  //     const processStatus = await AsyncStorage.getItem('processStatus');
+
+  //     if (processStatus) {
+  //       const { isWashing, progress } = JSON.parse(processStatus);
+
+  //       if (isWashing) {
+  //         // Lanjutkan proses jika diperlukan
+  //         console.log('Continuing process...');
+
+  //         // Kirim POST request untuk melanjutkan proses
+  //         await fetch(`${API.baseURL}/post-relay`, {
+  //           method: 'POST',
+  //           headers: {
+  //             'Content-Type': 'application/json',
+  //           },
+  //           body: JSON.stringify({
+  //             "relay1": true,
+  //             "relay2": true,
+  //             "relay3": false,
+  //             "relay4": false,
+  //           }),
+  //         });
+
+  //         // Update status proses di AsyncStorage jika diperlukan
+  //         await AsyncStorage.setItem('processStatus', JSON.stringify({
+  //           isWashing: false,
+  //           progress: 0,
+  //         }));
+  //       }
+  //     }
+  //   } catch (error) {
+  //     console.error('Failed to handle background task:', error);
+  //   }
+  // };
 
   useEffect(() => {
-    fetchData();
+    const initializeState = async () => {
+      try {
+        // Ambil nilai dari AsyncStorage
+        const savedIsWashing = await AsyncStorage.getItem('isWashing');
+        const savedIsCompleted = await AsyncStorage.getItem('isCompleted');
+        const savedProgress = await AsyncStorage.getItem('progress');
+
+        // Set nilai state jika ada
+        if (savedIsWashing !== null) setIsWashing(JSON.parse(savedIsWashing));
+        if (savedIsCompleted !== null) setIsCompleted(JSON.parse(savedIsCompleted));
+        if (savedProgress !== null) setProgress(JSON.parse(savedProgress));
+      } catch (error) {
+        console.error('Failed to load state from storage:', error);
+      }
+    };
+
+    initializeState();
   }, []);
+
+  useEffect(() => {
+    const saveStateToStorage = async () => {
+      try {
+        await AsyncStorage.setItem('isWashing', JSON.stringify(isWashing));
+        await AsyncStorage.setItem('isCompleted', JSON.stringify(isCompleted));
+        await AsyncStorage.setItem('progress', JSON.stringify(progress));
+      } catch (error) {
+        console.error('Failed to save state to storage:', error);
+      }
+    };
+
+    saveStateToStorage();
+  }, [isWashing, isCompleted, progress]);
+  
+
+
+
+  useEffect(() => {
+    if (isWashing === true) {
+      const totalDuration = 180000;
+      const interval = 1000;
+      const steps = totalDuration / interval;
+      const stepIncrement = 1 / steps;
+
+      const progressInterval = setInterval(() => {
+        setProgress(prevProgress => {
+          const newProgress = prevProgress + stepIncrement;
+          console.log(`Progress: ${Math.min(Math.round(newProgress * 100), 100)}%`);
+          if (newProgress >= 1) {
+            clearInterval(progressInterval);
+          }
+          return newProgress;
+        }); 
+      }, interval);
+
+      return () => clearInterval(progressInterval); // Clean up interval on unmount
+    }
+  }, [isWashing]);
+
+  const percentage = Math.min(Math.round(progress * 100), 100);
+
+  useEffect(() => {
+    if (isWashing) {
+      const loadingInterval = setInterval(() => {
+        setLoadingText(prev => {
+          if (prev.endsWith('...')) {
+            return 'Washing On Process';
+          } else {
+            return prev + '.';
+          }
+        });
+      }, 500); // Adjust the speed of the animation here
+
+      return () => clearInterval(loadingInterval);
+    }
+  }, [isWashing]);
+
+  const convertToPSI = (rawValue:number, maxValue = 65535, maxPSI = 100) => {
+    return (rawValue / maxValue) * maxPSI;
+  };
+
+  const convert16BitToNTU = (value:number) => {
+    const max16BitValue = 65535;
+    const maxNTU = 1000;
+  
+    return (value / max16BitValue) * maxNTU;
+  };
 
   const fetchData = async () => {
     try {
-      const response = await fetch('http://192.168.22.47/data');
+      const response = await fetch(`${API.baseURL}/data-sensor`);
       const data = await response.json();
-
-      // Assume data1 for water pressure and data3 for turbidity
-      setPressureData(data.data1['adc-value']);
-      setTurbidityData(data.data3['adc-value']);
+  
+      // Ambil nilai 16-bit dari data sensor
+      const rawPressureData1 = data.data1['adc-value'];
+      const rawPressureData2 = data.data2['adc-value'];
+      const rawTurbidityData = data.data3['adc-value'];
+  
+      // Konversi nilai 16-bit menjadi PSI dan batasi hingga 3 angka di belakang koma
+      const pressureData1PSI = convertToPSI(rawPressureData1).toFixed(2);
+      const pressureData2PSI = convertToPSI(rawPressureData2).toFixed(2);
+      const turbidityDataPSI = convert16BitToNTU(rawTurbidityData).toFixed(2);
+  
+      // Set nilai PSI ke state
+      setPressureData1(parseFloat(pressureData1PSI));
+      setPressureData2(parseFloat(pressureData2PSI));
+      setTurbidityData(parseFloat(turbidityDataPSI));
+  
       setLoading(false);
     } catch (error) {
       console.error(error);
+      // Set nilai default jika terjadi error
+      setPressureData1(0);
+      setPressureData2(0);
+      setTurbidityData(0);
     }
   };
 
-  // Fungsi yang akan dipanggil saat tombol ditekan
-  const handleButtonPress = () => {
-    setIsWashing(true);
-    // Setelah 3 detik, setel isWashing ke false dan isCompleted ke true
-    setTimeout(() => {
-      setIsWashing(false);
-      setIsCompleted(true);
-      // Setelah 2 detik, setel isCompleted ke false
-      setTimeout(() => {
-        setIsCompleted(false);
-      }, 2000); // 2000 milidetik = 2 detik
-    }, 3000); // 3000 milidetik = 3 detik
-  };
+    useEffect(() => {
+      // Fetch data pertama kali
+      fetchData();
 
-  const handleButtonPress1 = async () => {
+      // Set interval untuk polling data setiap 5 detik (5000 ms)
+      const interval = setInterval(() => {
+        fetchData();
+      }, 5000);
+
+      // Membersihkan interval saat komponen unmount
+      return () => clearInterval(interval);
+    }, []);
+
+
+  const handleButtonPress = async () => {
     setIsWashing(true);
+    setProgress(0);
   
     try {
-      const response = await fetch('http://192.168.22.47/post-data', {
+      // Kirim POST request pertama
+      const response = await fetch(`${API.baseURL}/post-relay`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          relay1: true,
-          relay2: true,
-          relay3: true,
-          relay4: true,
+          "relay1": false,
+          "relay2": false,
+          "relay3": true,
+          "relay4": true,
         }),
       });
   
       const result = await response.json();
+      console.log('First POST response:', result);
   
       if (result.status === 'success') {
-        setIsWashing(false);
-        setIsCompleted(true);
-        setTimeout(() => {
-          setIsCompleted(false);
-        }, 2000); // 2000 milidetik = 2 detik
+        setTimeout(async () => {
+          
+            console.log('Sending second POST request...');
+            const secondResponse = await fetch(`${API.baseURL}/post-relay`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                "relay1": true,
+                "relay2": true,
+                "relay3": false,
+                "relay4": false,
+              }),
+            });
+  
+            const secondResult = await secondResponse.json();
+            console.log('Second POST response:', secondResult);
+  
+            if (secondResult.status === 'success') {
+              setIsWashing(false);
+              setIsCompleted(true);
+              setTimeout(() => {
+                setIsCompleted(false);
+              }, 2000); // 2000 milidetik = 2 detik
+              fetchData();
+          } else {
+            console.log('Washing process was stopped before the second request.');
+          } 
+        }, 180000); 
       } else {
-        // Handle failure (optional)
         setIsWashing(false);
         Alert.alert('Error', 'Failed to start washing process');
       }
@@ -115,6 +291,35 @@ function App(): React.JSX.Element {
       Alert.alert('Error', 'An error occurred. Please try again.');
     }
   };
+
+  const handleCancel = async () => {
+    try {
+      // Kirim POST request untuk membatalkan proses
+      const response = await fetch(`${API.baseURL}/post-relay`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          "relay1": true,
+          "relay2": true,
+          "relay3": false,
+          "relay4": false,
+        }),
+      });
+
+      const result = await response.json();
+      console.log('Cancel POST response:', result);
+
+      // Reset semua state
+      setIsWashing(false);
+      setIsCompleted(false);
+      setProgress(0);
+    } catch (error) {
+      console.error('Error cancelling process:', error);
+    }
+  };
+  
 
   const backgroundStyle = {
     backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
@@ -140,31 +345,67 @@ function App(): React.JSX.Element {
         <View style={styles.content}>
           {isWashing ? (
             <View style={styles.messageContainer}>
-              <Text style={styles.messageText}>Washing On Process..</Text>
+            <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.messageText}>{loadingText}</Text>
+            <View style={styles.progressBarContainer}>
+              <Progress.Bar
+                progress={progress}
+                width={300}
+                height={30}
+                color="#4caf50"
+                borderRadius={10}
+              />
+              <Text style={styles.percentageText}>{percentage}%</Text>
+            </View>
             </View>
           ) : isCompleted ? (
             <View style={styles.messageContainer}>
               <Text style={styles.messageText}>Completed</Text>
             </View>
           ) : (
+            
             <View >
+              <View>
+                <TouchableOpacity style={styles.refreshButton} onPress={fetchData}>
+                  <Icon name="refresh-outline" size={30} color="#000" />
+                </TouchableOpacity>
+              </View>
               <View style={styles.rectangle1Style}>
+              
                 <View style={styles.rectangle1}>
                   <View style={styles.iconRow}>
                     <View style={styles.icons}>
                       <Icon name="speedometer-outline" size={30} color="#000" style={styles.icon} />
-                      <Text style={styles.iconText}>Pressure Sensor</Text>
+                      <Text style={styles.iconText}>Pressure Inlet Sensor</Text>
                     </View>
                     <View style={styles.rectangle2}>
-                      <Text style={styles.cencorText}>High</Text>
+                      <Text style={styles.cencorText}></Text>
                     </View>
                   </View>
                   <View style={styles.score}>
-                    {/* <Text style={styles.text1}>{pressureData}</Text> */}
-                    <Text style={styles.text1}>89/89</Text>
-                    <Text style={styles.text2}>ATM</Text>
+                    <Text style={styles.text1}>{pressureData1}/100</Text>
+                    <Text style={styles.text2}>PSI</Text>
                   </View>
                 </View>
+
+                <View style={styles.rectangle1}>
+                  <View style={styles.iconRow}>
+                    <View style={styles.icons}>
+                      <Icon name="speedometer-outline" size={30} color="#000" style={styles.icon} />
+                      <Text style={styles.iconText}>Pressure Outlet Sensor</Text>
+                    </View>
+                    <View style={styles.rectangle2}>
+                      <Text style={styles.cencorText}></Text>
+                    </View>
+                  </View>
+                  <View style={styles.score}>
+                    <Text style={styles.text1}>{pressureData2}/100</Text>
+                    <Text style={styles.text2}>PSI</Text>
+                  </View>
+                </View>
+
                 <View style={styles.rectangle1}>
                   <View style={styles.iconRow}>
                     <View style={styles.icons}>
@@ -172,13 +413,13 @@ function App(): React.JSX.Element {
                       <Text style={styles.iconText}>Turbidity Sensor</Text>
                     </View>
                     <View style={styles.rectangle2}>
-                      <Text style={styles.cencorText}>bitlongtext</Text>
+                      <Text style={styles.cencorText}></Text>
                     </View>
                   </View>
                   <View style={styles.score}>
-                    {/* <Text style={styles.text1}>{turbidityData}</Text> */}
-                    <Text style={styles.text1}>13,9/81.9</Text>
-                    <Text style={styles.text2}>ATM</Text>
+                    <Text style={styles.text1}>{turbidityData}/1000</Text>
+                    {/* <Text style={styles.text1}>13,9/81.9</Text> */}
+                    <Text style={styles.text2}>NTU</Text>
                   </View>
                 </View>
               </View>
@@ -236,7 +477,7 @@ const styles = StyleSheet.create({
     
   },
   rectangle1Style: {
-    marginTop: '40%',
+    marginTop: '10%',
     alignItems: 'center'
   },
   rectangle1: {
@@ -306,7 +547,7 @@ const styles = StyleSheet.create({
   rectangle2: {
     // width: 100,
     height: 30,
-    backgroundColor: 'red',
+    // backgroundColor: 'red',
     alignItems: 'center',
     borderRadius: 5,
     paddingHorizontal: 10,
@@ -324,7 +565,7 @@ const styles = StyleSheet.create({
     fontSize: 14
   },
   messageContainer: {
-    paddingTop: '90%',
+    paddingTop: '70%',
     justifyContent: 'center',
     alignItems: 'center',
     // flex: 1,
@@ -333,6 +574,37 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: 'blue',
+  },
+  refreshButton: {
+    alignSelf: 'flex-end',
+    marginTop: '5%'
+  },
+  progressBar: {
+    marginTop: 10,
+  },
+  progressBarContainer: {
+    marginTop: '5%',
+    width: 300,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  percentageText: {
+    position: 'absolute',
+    color: 'blue',
+    fontWeight: 'bold',
+  },
+  cancelButton: {
+    backgroundColor: 'red',
+    padding: 10,
+    borderRadius: 5,
+    marginTop: 10,
+  },
+  cancelButtonText: {
+    color: 'white',
+    textAlign: 'center',
+    fontWeight: 'bold',
   },
 });
 
